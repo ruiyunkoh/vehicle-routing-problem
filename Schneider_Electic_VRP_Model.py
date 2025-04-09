@@ -46,20 +46,36 @@ demand_df = pd.read_excel(xls, "Demand (KG)", index_col=0, engine="openpyxl")
 demand = demand_df["Demand (KG)"].values
 
 # Read truck capacities and fixed costs
-trucks_df = pd.read_excel(xls, "Trucks", index_col=0, engine="openpyxl", dtype={'Amount': object})
+trucks_df = pd.read_excel(
+    xls, "Trucks", index_col=0, engine="openpyxl", dtype={"Amount": object}
+)
 truck_capacity = trucks_df["Capacity (KG)"].values
 truck_fixed_cost = trucks_df["Fixed Cost ($)"].values
 
 # Read per km rate from Parameters sheet
 parameters_df = pd.read_excel(xls, "Parameters", index_col=0, engine="openpyxl")
 
-per_km_rate = int(parameters_df.iloc[0, 0])  # e.g., value from cell B2 ($/km) , convert to int explicitly
-speed_fast = int(parameters_df.iloc[1, 0])  # e.g., value from cell B3 (km/h), convert to int explicitly
-speed_slow = int(parameters_df.iloc[2, 0])  # e.g., value from cell B3 (km/h), convert to int explicitly
-base_unloading_time = int(parameters_df.iloc[3, 0])  # e.g., value from cell B5 (min), convert to int explicitly
-unloading_time_scale_factor = int(parameters_df.iloc[4, 0])  # e.g., value from cell B6 (min), convert to int explicitly
-lunch_break = int(parameters_df.iloc[5, 0])  # e.g., value from cell B7 (min), convert to int explicitly
-waiting_time = int(parameters_df.iloc[6, 0])  # e.g., value from cell B8 (min), convert to int explicitly
+per_km_rate = int(
+    parameters_df.iloc[0, 0]
+)  # e.g., value from cell B2 ($/km) , convert to int explicitly
+speed_fast = int(
+    parameters_df.iloc[1, 0]
+)  # e.g., value from cell B3 (km/h), convert to int explicitly
+speed_slow = int(
+    parameters_df.iloc[2, 0]
+)  # e.g., value from cell B3 (km/h), convert to int explicitly
+base_unloading_time = int(
+    parameters_df.iloc[3, 0]
+)  # e.g., value from cell B5 (min), convert to int explicitly
+unloading_time_scale_factor = int(
+    parameters_df.iloc[4, 0]
+)  # e.g., value from cell B6 (min), convert to int explicitly
+lunch_break = int(
+    parameters_df.iloc[5, 0]
+)  # e.g., value from cell B7 (min), convert to int explicitly
+waiting_time = int(
+    parameters_df.iloc[6, 0]
+)  # e.g., value from cell B8 (min), convert to int explicitly
 
 """
 Calculate total unloading time based on demand in kg.
@@ -67,6 +83,7 @@ Calculate total unloading time based on demand in kg.
 :param demand_kg: Weight in kilograms
 :return: Total nploading time in minutes
 """
+
 
 def get_total_unloading_time(demand_kg):
     if demand_kg == 0:
@@ -108,8 +125,7 @@ start_time_minutes = [
     convert_time_to_minutes(x) for x in time_df["Start Time Window (HH:MM)"].values
 ]
 end_time_minutes = [
-    convert_time_to_minutes(x) - lunch_break
-    for x in time_df["End Time Window (HH:MM)"].values
+    convert_time_to_minutes(x) for x in time_df["End Time Window (HH:MM)"].values
 ]
 
 num_trucks = len(truck_capacity)
@@ -121,6 +137,7 @@ for i, (cap, cost) in enumerate(zip(truck_capacity, truck_fixed_cost)):
     print(f"Truck {i+1}: {cap} KG, Fixed Cost: ${cost:.2f}")
 
 """STEP 2: SOLVE THE VRP WITH STRICT TIME WINDOW CONSTRAINTS"""
+
 
 def solve_vrp(
     distance_matrix,
@@ -201,9 +218,12 @@ def solve_vrp(
         end_tw = end_time_minutes[i - 1]  # e.g., 14:00 in minutes
         unloading = get_total_unloading_time(demand[i])
 
-        # Force the departure time to be no earlier than (start_tw + unloading),
-        # so that arrival time (departure - unloading) will be ≥ start_tw.
-        time_dimension.CumulVar(index_i).SetRange(start_tw + unloading, end_tw)
+        adjusted_start_tw = start_tw + unloading
+        # Check if lunch break is possible by checking the duration between start time (incl. unloading) and end time
+        is_break_allow = end_tw - adjusted_start_tw >= lunch_break
+        # If lunch break is possible, we allow time for possible lunch break by reducing the end time (to avoid exceed end time)
+        adjusted_end_tw = end_tw - lunch_break if is_break_allow else end_tw
+        time_dimension.CumulVar(index_i).SetRange(adjusted_start_tw, adjusted_end_tw)
 
         # Encourage the solver to minimize the departure time without forcing it exactly.
         routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(index_i))
@@ -243,6 +263,7 @@ def solve_vrp(
 
 
 """STEP 3: EXTRACT SOLUTION, COMPUTE CUMULATIVE TIME, FORMAT ARRIVAL TIME"""
+
 
 def extract_solution(
     manager,
@@ -298,7 +319,7 @@ def extract_solution(
             if stop_number == 0:
                 cum_time_hr = 0.0
             else:
-                cum_time_hr = round(arrival_time / 60.0, 2) - round(
+                cum_time_hr = round(departure_time / 60.0, 2) - round(
                     depot_time / 60.0, 2
                 )
 
@@ -429,13 +450,17 @@ if result:
     total_cost_all_trucks = routes_df["Total Cost ($)"].sum()
 
     # Add total cost row to routes_df
-    total_row = pd.DataFrame([{
-        "Truck": "Total",
-        "Capacity Used (KG)": total_capacity_all_trucks,
-        "Variable Cost ($)": total_variable_cost_all_trucks,
-        "Fixed Cost ($)": total_fixed_cost_all_trucks,
-        "Total Cost ($)": total_cost_all_trucks
-    }])
+    total_row = pd.DataFrame(
+        [
+            {
+                "Truck": "Total",
+                "Capacity Used (KG)": total_capacity_all_trucks,
+                "Variable Cost ($)": total_variable_cost_all_trucks,
+                "Fixed Cost ($)": total_fixed_cost_all_trucks,
+                "Total Cost ($)": total_cost_all_trucks,
+            }
+        ]
+    )
     routes_df = pd.concat([routes_df, total_row], ignore_index=True)
 
     os.system(
