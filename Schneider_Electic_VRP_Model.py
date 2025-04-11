@@ -45,6 +45,13 @@ distance_matrix = distance_df.iloc[1:, 1:].values
 demand_df = pd.read_excel(xls, "Demand (KG)", index_col=0, engine="openpyxl")
 demand = demand_df["Demand (KG)"].values
 
+
+# Track invalid customer with demand 0 except depot
+invalid_customer = [
+    index for index, demand in enumerate(demand) if index != 0 and demand == 0
+]
+
+
 # Read truck capacities and fixed costs
 trucks_df = pd.read_excel(
     xls, "Trucks", index_col=0, engine="openpyxl", dtype={"Amount": object}
@@ -176,6 +183,9 @@ def solve_vrp(
 
     # Time callback: computes travel + unloading time in minutes
     def time_callback(from_index, to_index):
+        if to_index in invalid_customer:
+            return 0
+
         from_node = manager.IndexToNode(int(from_index))
         to_node = manager.IndexToNode(int(to_index))
         dist = distance_matrix[from_node][to_node]
@@ -294,8 +304,11 @@ def extract_solution(
         break_taken = False  # put this before the while loop
 
         while not routing.IsEnd(index):
-            is_break_node = "N"
             node = manager.IndexToNode(int(index))
+            if node in invalid_customer:
+                index = solution.Value(routing.NextVar(index))
+                continue
+            is_break_node = "N"
             route.append(node)
             current_demand = demand[node]
             total_demand += current_demand
