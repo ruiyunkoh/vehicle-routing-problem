@@ -30,27 +30,32 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 """STEP 1: LOAD EXCEL DATA"""
 
 file_path = (
-    "Modelling_Using_Python1_clean - Copy (1).xlsx"  # Update with your actual file path
+    "Modelling_data_18_customers.xlsx"  # Update with your actual file path
 )
 
 # Load sheets using openpyxl to preserve formulas
 xls = pd.ExcelFile(file_path, engine="openpyxl")
 
+# Read customer name and index
+customer_df = pd.read_excel(xls, "Customers", engine="openpyxl")
+customer_id_to_name_map = dict(zip(customer_df["S/N"].values, customer_df["Customer name"].values))
+
 # Read distance matrix
-distance_df = pd.read_excel(xls, "Distance (KM)", index_col=0, engine="openpyxl")
+distance_df = pd.read_excel(xls, "Distance (KM)", engine="openpyxl")
 # Assumes the first row/column are headers; remove them
-distance_matrix = distance_df.iloc[1:, 1:].values
+# Note that the index here is the customer ID
+distance_matrix = distance_df.iloc[1:, 2:].values
 
 # Read demand (assumed to include depot at index 0)
-demand_df = pd.read_excel(xls, "Demand (KG)", index_col=0, engine="openpyxl")
+demand_df = pd.read_excel(xls, "Demand (KG)", engine="openpyxl")
+# Note that the index of the list is the drop-off ID, NOT the customer ID
 demand = demand_df["Demand (KG)"].values
-
+demand_with_customer_id = list(zip(demand_df['S/N'], demand_df['Demand (KG)']))
 
 # Track invalid customer with demand 0 except depot
-invalid_customer = [
+invalid_nodes = [
     index for index, demand in enumerate(demand) if index != 0 and demand == 0
 ]
-
 
 # Read truck capacities and fixed costs
 trucks_df = pd.read_excel(
@@ -104,10 +109,9 @@ def get_total_unloading_time(demand_kg):
 time_df = pd.read_excel(
     xls,
     "Time Constraint",
-    usecols=["Start Time Window (HH:MM)", "End Time Window (HH:MM)"],
+    usecols=["S/N", "Start Time Window (HH:MM)", "End Time Window (HH:MM)"],
     engine="openpyxl",
 )
-
 
 # Helper function to convert a time value (HH:MM) or datetime to minutes
 def convert_time_to_minutes(t):
@@ -135,8 +139,45 @@ end_time_minutes = [
     convert_time_to_minutes(x) for x in time_df["End Time Window (HH:MM)"].values
 ]
 
+# Utility functions to get customer ID from drop-off node and vice versa
+def get_customer_id_from_demand_node(node): 
+    customer_index = demand_with_customer_id[node][0]
+    return customer_index
+
+def get_time_window_for_customer_by_id(customer_id):
+    row = time_df.loc[time_df['S/N'] == customer_id]
+    
+    if row.empty:
+        print(f"No entry found for customer_id: {customer_id}")
+        return None  # or handle the case where the customer_id is not found
+
+    row_index = row.index.values[0]
+    return start_time_minutes[row_index], end_time_minutes[row_index]
+
+def get_time_window_for_customer_by_node(node):
+    customer_id = get_customer_id_from_demand_node(node)
+    return get_time_window_for_customer_by_id(customer_id)
+    
+def get_distance_between_customers_by_id(customer_id_1, customer_id_2):
+    # Ensure customer_id_1 exists in the DataFrame
+    if customer_id_1 not in distance_df['KM'].values:
+        raise ValueError(f"Customer ID {customer_id_1} not found in distance_df.")
+    
+    # Ensure customer_id_2 exists as a column in the DataFrame
+    if customer_id_2 not in distance_df.columns:
+        raise ValueError(f"Column {customer_id_2} not found in distance_df.")
+    
+    # Get the distance value
+    distance_value = distance_df.loc[distance_df['KM'] == customer_id_1, customer_id_2].values[0]
+    return distance_value
+
+def get_distance_between_customers_by_node(node_1, node_2):
+    customer_id_1 = get_customer_id_from_demand_node(node_1)
+    customer_id_2 = get_customer_id_from_demand_node(node_2)
+    return get_distance_between_customers_by_id(customer_id_1, customer_id_2)
+
 num_trucks = len(truck_capacity)
-num_locations = len(distance_matrix)  # Includes depot at index 0
+num_drop_offs = len(demand_with_customer_id) # Includes depot at index 0
 depot = 0  # Depot is at index 0
 
 print("Truck ID, Capacities, and Fixed Costs:")
@@ -147,29 +188,16 @@ for i, (cap, cost) in enumerate(zip(truck_capacity, truck_fixed_cost)):
 
 
 def solve_vrp(
-    distance_matrix,
     demand,
     truck_capacity,
     truck_fixed_cost,
     per_km_rate,
     num_trucks,
-    start_time_minutes,
-    end_time_minutes,
     speed_fast,
     speed_slow,
 ):
-    manager = pywrapcp.RoutingIndexManager(num_locations, num_trucks, depot)
+    manager = pywrapcp.RoutingIndexManager(num_drop_offs, num_trucks, depot)
     routing = pywrapcp.RoutingModel(manager)
-
-    # Distance callback and cost
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(int(from_index))
-        to_node = manager.IndexToNode(int(to_index))
-        return distance_matrix[from_node][to_node]
-
-    # This prioritises the distance as the main cost constraint
-    # transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    # routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     # Demand callback and capacity constraint
     def demand_callback(from_index):
@@ -183,12 +211,12 @@ def solve_vrp(
 
     # Time callback: computes travel + unloading time in minutes
     def time_callback(from_index, to_index):
-        if to_index in invalid_customer:
+        if to_index in invalid_nodes:
             return 0
 
         from_node = manager.IndexToNode(int(from_index))
         to_node = manager.IndexToNode(int(to_index))
-        dist = distance_matrix[from_node][to_node]
+        dist = get_distance_between_customers_by_node(from_node, to_node)
 
         def get_travel_time(distance):
             if distance > 70:
@@ -220,12 +248,10 @@ def solve_vrp(
     for vehicle_id in range(num_trucks):
         index_start = routing.Start(vehicle_id)
         time_dimension.CumulVar(index_start).SetRange(540, horizon)
-
     # Set customer time windows
-    for i in range(1, num_locations):  # Skip depot (0)
+    for i in range(1, num_drop_offs):  # Skip depot (0)
         index_i = manager.NodeToIndex(i)
-        start_tw = start_time_minutes[i - 1]  # e.g., 12:00 in minutes
-        end_tw = end_time_minutes[i - 1]  # e.g., 14:00 in minutes
+        start_tw, end_tw = get_time_window_for_customer_by_node(i) # e.g., 12:00 in minutes
         unloading = get_total_unloading_time(demand[i])
 
         adjusted_start_tw = start_tw + unloading
@@ -262,11 +288,8 @@ def solve_vrp(
             solution,
             truck_fixed_cost,
             demand,
-            distance_matrix,
             per_km_rate,
-            time_dimension,
-            speed_fast,
-            speed_slow,
+            time_dimension
         )
     else:
         return None
@@ -281,16 +304,14 @@ def extract_solution(
     solution,
     truck_fixed_cost,
     demand,
-    distance_matrix,
     per_km_rate,
-    time_dimension,
-    speed_fast,
-    speed_slow,
+    time_dimension
 ):
     routes = {}
     cumulative_rows = []
     total_cost = 0.0
     total_distance = 0.0
+    nodes_visited_count = {}
 
     for vehicle_id in range(manager.GetNumberOfVehicles()):
         index = routing.Start(vehicle_id)
@@ -305,11 +326,21 @@ def extract_solution(
 
         while not routing.IsEnd(index):
             node = manager.IndexToNode(int(index))
-            if node in invalid_customer:
+            if node in invalid_nodes:
                 index = solution.Value(routing.NextVar(index))
                 continue
             is_break_node = "N"
-            route.append(node)
+            customer_id = get_customer_id_from_demand_node(node)
+
+            # Format customer_id to clearly indicate when a customer is visited on multiple drop-offs
+            if node != depot:
+                if customer_id in nodes_visited_count:
+                    original_customer_id = customer_id
+                    customer_id = f'{original_customer_id}.{nodes_visited_count[original_customer_id]}'
+                    nodes_visited_count[original_customer_id] += 1
+                else:
+                    nodes_visited_count[customer_id] = 1
+            route.append(customer_id)
             current_demand = demand[node]
             total_demand += current_demand
 
@@ -357,7 +388,7 @@ def extract_solution(
             seg_distance = 0.0
             seg_cost = 0.0
             if prev_node is not None:
-                seg_distance = distance_matrix[prev_node][node]
+                seg_distance = get_distance_between_customers_by_node(prev_node, node)
                 seg_cost = seg_distance * per_km_rate
                 route_distance += seg_distance
                 variable_cost += seg_cost
@@ -366,7 +397,7 @@ def extract_solution(
                 (
                     vehicle_id + 1,
                     stop_number,
-                    node,
+                    customer_id,
                     current_demand,
                     seg_distance,
                     seg_cost,
@@ -414,14 +445,11 @@ def extract_solution(
 """STEP 4: RUN THE SOLVER AND SAVE RESULTS"""
 
 result = solve_vrp(
-    distance_matrix,
     demand,
     truck_capacity,
     truck_fixed_cost,
     per_km_rate,
     num_trucks,
-    start_time_minutes,
-    end_time_minutes,
     speed_fast,
     speed_slow,
 )
