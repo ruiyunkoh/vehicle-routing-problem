@@ -288,9 +288,9 @@ def extract_solution(
         variable_cost = 0.0
         prev_node = None
         stop_number = 0
-
+        truck_tonnages = [trucks_df.loc[i, 'Capacity (KG)'] for i in trucks_df.index]
         break_taken = False  # put this before the while loop
-
+        
         while not routing.IsEnd(index):
             node = manager.IndexToNode(int(index))
             if node in invalid_nodes:
@@ -298,6 +298,8 @@ def extract_solution(
                 continue
             is_break_node = "N"
             customer_id = get_customer_id_from_demand_node(node)
+
+            company_name = customer_id_to_name_map.get(get_primary_customer_id(customer_id), "Unknown")
 
             # Format customer_id to clearly indicate when a customer is visited on multiple drop-offs
             if node != depot:
@@ -365,6 +367,8 @@ def extract_solution(
                     vehicle_id + 1,
                     stop_number,
                     customer_id,
+                    company_name,
+                    truck_tonnages[vehicle_id],
                     current_demand,
                     seg_distance,
                     seg_cost,
@@ -395,6 +399,8 @@ def extract_solution(
             "Truck ID",
             "Stop Order",
             "Node",
+            "Company Name",
+            "Truck Tonnage (KG)",
             "Demand (KG)",
             "Segment Distance (KM)",
             "Segment Cost (KRW)",
@@ -430,6 +436,7 @@ if result:
             (
                 truck + 1,
                 " -> ".join(map(str, route)),
+                trucks_df.iloc[truck]["Capacity (KG)"],
                 capacity_used,
                 variable_cost,
                 fixed_cost,
@@ -445,6 +452,7 @@ if result:
         columns=[
             "Truck",
             "Route",
+            "Truck Tonnage (KG)",
             "Capacity Used (KG)",
             "Variable Cost (KRW)",
             "Fixed Cost (KRW)",
